@@ -567,7 +567,6 @@ def fetch_feed(feed):
         pass
     return articles
 
-
 def fetch_boj_press_releases(limit=1):
     boj_articles = []
     translator = Translator()
@@ -582,7 +581,7 @@ def fetch_boj_press_releases(limit=1):
             href = a['href']
             title = a.get_text(strip=True)
             if href.startswith("/en/about/press/") and href.endswith(".htm") and "index" not in href and title:
-                full_url = urljoin(BOJ_BASE_URL, href) # ya da urllib.parse.urljoin
+                full_url = urllib.parse.urljoin(BOJ_BASE_URL, href)
                 sub_pages.append((title, full_url))
                 if len(sub_pages) >= limit * 2:
                     break
@@ -620,8 +619,7 @@ def fetch_boj_press_releases(limit=1):
                 ai_summary = summarize_with_gemini(raw_text)
                 
                 if not ai_summary:
-                    # Eğer AI çalışmadıysa ham metni basmak yerine şık bir bilgilendirme yazısı koyalım
-                    ai_summary = "📊 <b>Rapor Özeti:</b> Metin başarıyla indirildi ancak AI analizi oluşturulamadı. Lütfen orijinal bağlantıdan inceleyin."
+                    ai_summary = "📊 <b>Rapor Özeti:</b> Metin indirildi ancak AI analizi oluşturulamadı. Lütfen orijinal bağlantıdan inceleyin."
 
                 title_tr = translator.translate(title)
 
