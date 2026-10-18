@@ -3,3 +3,4 @@ feedparser
 deep-translator
 beautifulsoup4
 pypdf
+google-genai

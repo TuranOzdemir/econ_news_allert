@@ -1,12 +1,9 @@
 """
-Ücretsiz Ekonomi Haber Botu
----------------------------
+Ücretsiz Ekonomi Haber Botu (Gemini AI Destekli BOJ Özetleyici)
+-------------------------------------------------------------
 RSS ve BOJ Basın Açıklamalarından ekonomi haberlerini alır, filtreler, 
-yabancı haberleri ve BOJ PDF özetlerini Türkçe'ye çevirir 
-ve Telegram üzerinden kullanıcıya gönderir.
-
-Gerekli paketler:
-    pip install requests feedparser deep-translator beautifulsoup4 pypdf
+yabancı haberleri ve BOJ PDF özetlerini Gemini AI ile profesyonelce Türkçe'ye çevirip 
+Telegram üzerinden kullanıcıya gönderir.
 """
 
 import os
@@ -20,7 +17,6 @@ import calendar
 import threading
 import io
 import urllib.parse
-from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -34,7 +30,13 @@ try:
     from deep_translator import GoogleTranslator, MyMemoryTranslator
 except ImportError:
     GoogleTranslator = None
-    MyMemoryTranslator = Nones
+    MyMemoryTranslator = None
+
+# Google GenAI (Gemini) Kütüphanesi
+try:
+    from google import genai
+except ImportError:
+    genai = None
 
 
 # ============================================================
@@ -43,6 +45,7 @@ except ImportError:
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 BASE_DIR = Path(__file__).resolve().parent
 SEEN_FILE = BASE_DIR / "news_seen.json"
@@ -70,7 +73,6 @@ SUMMARY_MAX_CHARS = 250
 DRY_RUN = "--dry-run" in sys.argv[1:]
 USER_AGENT = "Mozilla/5.0 (compatible; FreeEconomyNewsBot/1.0)"
 
-# BOJ (Japonya Merkez Bankası) Basın Açıklamaları Kaynağı
 BOJ_PRESS_URL = "https://www.boj.or.jp/en/about/press/"
 BOJ_BASE_URL = "https://www.boj.or.jp"
 
@@ -92,11 +94,13 @@ def redact(value):
     text = str(value)
     if TELEGRAM_BOT_TOKEN:
         text = text.replace(TELEGRAM_BOT_TOKEN, "***")
+    if GEMINI_API_KEY:
+        text = text.replace(GEMINI_API_KEY, "***")
     return text
 
 
 # ============================================================
-# 3. RSS VE ÖZEL HABER KAYNAKLARI
+# 3. RSS VE ÖZEL KAYNAKLAR
 # ============================================================
 
 RSS_FEEDS = [
@@ -129,7 +133,7 @@ RSS_FEEDS = [
 
 
 # ============================================================
-# 4. HABER FİLTRELERİ
+# 4. FİLTRELER VE YARDIMCI ARAÇLAR
 # ============================================================
 
 NEGATIVE_KEYWORDS = [
@@ -206,10 +210,6 @@ HIGH_PRIORITY_KEYWORDS = [
     "intervention", "rezerv", "currency crisis", "kur krizi",
 ]
 
-
-# ============================================================
-# 5. YARDIMCI FONKSİYONLAR
-# ============================================================
 
 def normalize_text(text):
     text = (text or "").lower()
@@ -304,7 +304,48 @@ def http_get(url, timeout, retries=RSS_RETRIES, **kwargs):
 
 
 # ============================================================
-# 6. HABER FİLTRELEME
+# 5. GEMINI AI İLE AKILLI ÖZETLEME
+# ============================================================
+
+def summarize_with_gemini(raw_text):
+    """
+    BOJ PDF metnini Gemini AI kullanarak profesyonel bir ekonomi analizine ve 
+    maddelenmiş Türkçe özete dönüştürür. API yoksa veya hata alırsa boş döner.
+    """
+    if not genai or not GEMINI_API_KEY:
+        return None
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        
+        prompt = (
+            "Sen uzman bir kıdemli ekonomi analistisin. Aşağıda Japonya Merkez Bankası'nın (BOJ) "
+            "resmi bir raporunun/konuşmasının ham metni bulunmaktadır. Bu metni oku ve yatırımcılar ile "
+            "ekonomistler için en kritik noktaları süzerek Türkçe olarak şu formatta profesyonel bir özet çıkar:\n\n"
+            "🎯 **Ana Trend / Duruş:** (1 cümlelik genel para politikası yönü)\n"
+            "📊 **Kritik Gelişmeler ve Veriler:**\n"
+            "- (Madde 1)\n"
+            "- (Madde 2)\n"
+            "- (Madde 3)\n\n"
+            "Lütfen yalnızca ekonomik odaklı, net ve akıcı Türkçe bir özet sun. Ham metin:\n\n"
+            f"{raw_text[:4000]}"
+        )
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        
+        if response and response.text:
+            return response.text.strip()
+    except Exception as e:
+        logger.error("Gemini AI özetleme hatası: %s", redact(e))
+    
+    return None
+
+
+# ============================================================
+# 6. HABER FİLTRELEME VE GEÇMİŞ YÖNETİMİ
 # ============================================================
 
 def is_valid_news(title, feed_type, summary=""):
@@ -326,15 +367,8 @@ def is_valid_news(title, feed_type, summary=""):
     return contains_any_keyword(combined_text, keywords)
 
 
-# ============================================================
-# 7. KALICI HABER GEÇMİŞİ
-# ============================================================
-
 def load_state():
-    default_state = {
-        "seen_ids": [],
-        "last_update_id": 0,
-    }
+    default_state = {"seen_ids": [], "last_update_id": 0}
     if not SEEN_FILE.exists():
         return default_state
 
@@ -344,15 +378,12 @@ def load_state():
         if isinstance(data, list):
             return {"seen_ids": data, "last_update_id": 0}
         if isinstance(data, dict):
-            seen_ids = data.get("seen_ids", [])
-            last_update_id = data.get("last_update_id", 0)
             return {
-                "seen_ids": seen_ids if isinstance(seen_ids, list) else [],
-                "last_update_id": last_update_id if isinstance(last_update_id, int) else 0,
+                "seen_ids": data.get("seen_ids", []) if isinstance(data.get("seen_ids"), list) else [],
+                "last_update_id": data.get("last_update_id", 0) if isinstance(data.get("last_update_id"), int) else 0,
             }
-    except (OSError, json.JSONDecodeError) as error:
-        logger.warning("Haber geçmişi okunamadı: %s", error)
-
+    except Exception:
+        pass
     return default_state
 
 
@@ -365,35 +396,27 @@ def save_state(state):
         with open(temporary_file, "w", encoding="utf-8") as file:
             json.dump(state, file, ensure_ascii=False, indent=2)
         os.replace(temporary_file, SEEN_FILE)
-    except OSError as error:
-        logger.error("Haber geçmişi kaydedilemedi: %s", error)
+    except OSError:
+        pass
 
 
 # ============================================================
-# 8. ÇEVİRİ
+# 7. ÇEVİRİ VE TELEGRAM İŞLEMLERİ
 # ============================================================
 
 class Translator:
     def __init__(self):
-        self.enabled = (
-            GoogleTranslator is not None
-            or MyMemoryTranslator is not None
-        )
+        self.enabled = GoogleTranslator is not None or MyMemoryTranslator is not None
         self.failures = 0
         self.spent = 0.0
         self.cache = {}
         self.disabled = set()
         self.last_call = 0.0
 
-        if not self.enabled:
-            logger.warning("deep-translator bulunamadı; çeviri devre dışı.")
-
     def translate(self, text):
-        if not text:
+        if not text or text in self.cache or not self.enabled or self.failures >= TRANSLATE_MAX_FAILURES:
             return text
-        if text in self.cache:
-            return self.cache[text]
-        if not self.enabled or self.failures >= TRANSLATE_MAX_FAILURES or self.spent >= TRANSLATE_BUDGET:
+        if self.spent >= TRANSLATE_BUDGET:
             return text
 
         providers = []
@@ -403,9 +426,7 @@ class Translator:
             providers.append(("mymemory", lambda: MyMemoryTranslator(source="en-US", target="tr-TR")))
 
         result = {}
-
         def worker():
-            errors = []
             for name, factory in providers:
                 if name in self.disabled:
                     continue
@@ -414,12 +435,9 @@ class Translator:
                     if output and output.strip() and "MYMEMORY WARNING" not in output.upper():
                         result["text"] = output
                         return
-                    errors.append(f"{name}: boş/uyarı yanıtı")
                 except Exception as error:
-                    errors.append(f"{name}: {error}")
                     if "too many requests" in str(error).lower():
                         self.disabled.add(name)
-            result["error"] = "; ".join(errors) or "çevirmen yok"
 
         wait = TRANSLATE_MIN_GAP - (time.monotonic() - self.last_call)
         if wait > 0:
@@ -430,13 +448,11 @@ class Translator:
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
         thread.join(TRANSLATE_TIMEOUT)
-
         self.spent += time.monotonic() - started
-        translated = (result.get("text") or "").strip()
 
+        translated = (result.get("text") or "").strip()
         if thread.is_alive() or not translated:
             self.failures += 1
-            logger.warning("Çeviri başarısız: %s", result.get("error", "zaman aşımı"))
             return text
 
         self.failures = 0
@@ -448,16 +464,12 @@ def prepare_article(article, translator):
     article["display_title"] = article["title"]
     article["display_summary"] = article["summary"]
 
-    if article["type"] == "GLOBAL":
+    if article["type"] == "GLOBAL" and not article.get("ai_summarized"):
         article["display_title"] = translator.translate(article["title"])
         article["display_summary"] = translator.translate(article["summary"])
 
     return article
 
-
-# ============================================================
-# 9. TELEGRAM MESAJ GÖNDERME
-# ============================================================
 
 def send_telegram_message(message):
     if DRY_RUN:
@@ -466,7 +478,6 @@ def send_telegram_message(message):
         return True
 
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error("Telegram token veya chat ID eksik.")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -481,36 +492,28 @@ def send_telegram_message(message):
         try:
             response = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
             if response.status_code == 429:
-                try:
-                    retry_after = int(response.json().get("parameters", {}).get("retry_after", 5))
-                except (ValueError, TypeError):
-                    retry_after = 5
-                time.sleep(min(retry_after, 30))
+                time.sleep(5)
                 continue
-
             response.raise_for_status()
-            result = response.json()
-            if not result.get("ok"):
-                return False
             return True
-        except requests.RequestException as error:
-            response_obj = getattr(error, "response", None)
-            if response_obj is not None and 400 <= response_obj.status_code < 500:
-                return False
+        except requests.RequestException:
             time.sleep(2 * attempt)
-        except ValueError:
-            return False
     return False
 
 
 def format_news_message(article):
     title = html.escape(article.get("display_title") or article["title"])
-    summary = html.escape(article.get("display_summary", article.get("summary", "")))
+    summary = article.get("display_summary", article.get("summary", ""))
+    
+    # AI özetleri zaten HTML formatlıdır, RSS özetleri HTML escape edilir
+    if not article.get("ai_summarized"):
+        summary = html.escape(summary)
+
     source = html.escape(article["source"])
     link = html.escape(article["link"], quote=True)
 
     if article["flash"]:
-        heading = "🚨 <b>ÖNCELİKLİ GELİŞME</b>"
+        heading = "🚨 <b>ÖNCELİKLİ GELİŞME (BOJ)</b>"
     elif article["priority"] == "HIGH":
         heading = "📌 <b>ÖNEMLİ EKONOMİ HABERİ</b>"
     else:
@@ -519,36 +522,26 @@ def format_news_message(article):
     parts = [heading, "", f"📍 <i>{source}</i>", f"📰 <b>{title}</b>"]
     if summary:
         parts.extend(["", summary])
-    parts.extend(["", f'🔗 <a href="{link}">Haberi oku</a>'])
+    parts.extend(["", f'🔗 <a href="{link}">Haberi oku / İncele</a>'])
     return "\n".join(parts)
 
 
 # ============================================================
-# 10. RSS VE BOJ BASIN AÇIKLAMALARINI OKUMA
+# 8. RSS VE BOJ BASIN AÇIKLAMALARI TARAYICI
 # ============================================================
 
 def fetch_feed(feed):
     articles = []
     try:
-        logger.info("RSS kaynağı okunuyor: %s", feed["name"])
         response = http_get(feed["url"], RSS_TIMEOUT, headers={"User-Agent": USER_AGENT})
         parsed = feedparser.parse(response.content)
 
-        if not parsed.entries:
-            return []
-
-        for entry in parsed.entries:
-            if len(articles) >= MAX_ARTICLES_PER_FEED:
-                break
-
+        for entry in parsed.entries[:MAX_ARTICLES_PER_FEED]:
             title = clean_text(entry.get("title", ""))
             link = entry.get("link", "").strip()
-            summary_raw = entry.get("summary", "") or entry.get("description", "")
-            summary_full = clean_text(summary_raw)
+            summary_full = clean_text(entry.get("summary", "") or entry.get("description", ""))
 
-            if not title or not link:
-                continue
-            if not is_valid_news(title, feed["type"], summary_full):
+            if not title or not link or not is_valid_news(title, feed["type"], summary_full):
                 continue
 
             published = entry.get("published_parsed") or entry.get("updated_parsed")
@@ -564,22 +557,22 @@ def fetch_feed(feed):
                 "priority": get_news_priority(title),
                 "flash": is_flash_news(title),
                 "published_ts": published_ts,
+                "ai_summarized": False,
             })
     except Exception:
-        logger.exception("RSS işlenirken hata oluştu: %s", feed["name"])
+        pass
     return articles
 
 
-def fetch_boj_press_releases(limit=2):
+def fetch_boj_press_releases(limit=1):
     """
-    Japonya Merkez Bankası (BOJ) basın sayfasını tarar, PDF metinlerini 
-    MyMemory karakter sınırına (500 karakter) uygun parçalar halinde güvenle çevirir.
+    BOJ basın bültenlerini ve PDF'lerini tarar; Gemini AI ile profesyonel özet çıkarır.
     """
     boj_articles = []
     translator = Translator()
     
     try:
-        logger.info("BOJ Basın Açıklamaları derinlemesine taranıyor...")
+        logger.info("BOJ Basın Açıklamaları Gemini AI ile taranıyor...")
         response = http_get(BOJ_PRESS_URL, RSS_TIMEOUT, headers={"User-Agent": USER_AGENT})
         soup = BeautifulSoup(response.content, "html.parser")
         
@@ -613,30 +606,26 @@ def fetch_boj_press_releases(limit=2):
                     try:
                         pdf_res = http_get(pdf_link, RSS_TIMEOUT, headers={"User-Agent": USER_AGENT})
                         reader = PdfReader(io.BytesIO(pdf_res.content))
-                        for page in reader.pages[:2]:  # İlk 2 sayfa yeterli ve güvenlidir
-                            extracted = page.extract_text() or ""
-                            raw_text += extracted + "\n"
-                    except Exception as e:
-                        logger.error("BOJ PDF okuma hatası: %s", e)
+                        for page in reader.pages[:3]:
+                            raw_text += (page.extract_text() or "") + "\n"
+                    except Exception:
+                        pass
                 
                 if not raw_text:
                     paragraphs = page_soup.find_all("p")
-                    raw_text = " ".join([p.get_text(strip=True) for p in paragraphs[:5]])
+                    raw_text = " ".join([p.get_text(strip=True) for p in paragraphs[:10]])
 
-                clean_raw = re.sub(r"\s+", " ", raw_text).strip()
+                # 1. Önce Gemini AI ile profesyonel özet almayı dene
+                ai_summary = summarize_with_gemini(raw_text)
                 
-                # MyMemory sınırını (500 karakter) aşmamak için metni 450 karakterle sınırlandırıyoruz
-                chunk_en = clean_raw[:450] if len(clean_raw) > 450 else clean_raw
-                
-                # Başlığı ve güvenli boyuttaki metni çevir
-                title_tr = translator.translate(title)
-                summary_tr = translator.translate(chunk_en) if chunk_en else "Detaylı BOJ basın açıklaması."
-
-                formatted_summary = (
-                    f"🇯🇵 <b>Japonya Merkez Bankası (BOJ) Rapor Özeti</b>\n\n"
-                    f"📝 {summary_tr}...\n\n"
-                    f"📌 <i>Raporun tamamı ve detaylar için aşağıdaki bağlantıyı kullanabilirsiniz.</i>"
-                )
+                if ai_summary:
+                    summary_tr = ai_summary
+                    title_tr = translator.translate(title)
+                else:
+                    # Gemini anahtarı yoksa veya hata verdiyse klasik çeviriye düş
+                    clean_raw = re.sub(r"\s+", " ", raw_text).strip()
+                    summary_tr = translator.translate(clean_raw[:450])
+                    title_tr = translator.translate(title)
 
                 boj_articles.append({
                     "title": title,
@@ -645,25 +634,26 @@ def fetch_boj_press_releases(limit=2):
                     "id": normalize_link(target_link),
                     "source": "Bank of Japan (BOJ) Press",
                     "type": "GLOBAL",
-                    "summary": formatted_summary,
-                    "display_summary": formatted_summary,
+                    "summary": summary_tr,
+                    "display_summary": summary_tr,
                     "priority": "HIGH",
                     "flash": True,
                     "published_ts": time.time(),
+                    "ai_summarized": True,
                 })
             except Exception as page_err:
-                logger.error("BOJ alt sayfa işleme hatası (%s): %s", page_url, page_err)
+                logger.error("BOJ rapor işleme hatası: %s", page_err)
 
     except Exception as err:
         logger.error("BOJ basın sayfası taranamadı: %s", err)
 
     return boj_articles
 
+
 def fetch_news():
     with ThreadPoolExecutor(max_workers=RSS_MAX_WORKERS) as pool:
         results = list(pool.map(fetch_feed, RSS_FEEDS))
 
-    # BOJ Basın Açıklamalarını da ekle
     results.append(fetch_boj_press_releases())
 
     articles = []
@@ -686,8 +676,6 @@ def fetch_news():
             -(article["published_ts"] or 0),
         )
     )
-
-    logger.info("Filtreleme tamamlandı. Uygun haber sayısı: %s", len(articles))
     return articles
 
 
@@ -695,12 +683,11 @@ def is_recent(article):
     published_ts = article["published_ts"]
     if published_ts is None:
         return True
-    age_seconds = time.time() - published_ts
-    return age_seconds <= MAX_ARTICLE_AGE_HOURS * 3600
+    return (time.time() - published_ts) <= MAX_ARTICLE_AGE_HOURS * 3600
 
 
 # ============================================================
-# 11. TELEGRAM KOMUTLARINI KONTROL ETME
+# 9. TELEGRAM KOMUTLARI VE ANA AKIŞ
 # ============================================================
 
 def check_telegram_commands(state):
@@ -718,21 +705,12 @@ def check_telegram_commands(state):
     try:
         response = http_get(url, REQUEST_TIMEOUT, retries=1, params=params)
         result = response.json()
-        if not result.get("ok"):
-            return False
-
-        for update in result.get("result", []):
-            state["last_update_id"] = max(state["last_update_id"], update["update_id"])
-            message = update.get("message", {})
-            chat_id = str(message.get("chat", {}).get("id", ""))
-            if chat_id != str(TELEGRAM_CHAT_ID):
-                continue
-            text = (message.get("text") or "").strip().lower()
-            command = text.split()[0] if text else ""
-            command = command.split("@")[0]
-            if command in ("/son", "/haber", "/guncel", "/güncel"):
-                force_send = True
-
+        if result.get("ok"):
+            for update in result.get("result", []):
+                state["last_update_id"] = max(state["last_update_id"], update["update_id"])
+                text = (update.get("message", {}).get("text") or "").strip().lower()
+                if text.split("@")[0] in ("/son", "/haber", "/guncel", "/güncel"):
+                    force_send = True
         save_state(state)
     except Exception:
         pass
@@ -740,15 +718,10 @@ def check_telegram_commands(state):
     return force_send
 
 
-# ============================================================
-# 12. ANA PROGRAM
-# ============================================================
-
 def main():
-    logger.info("Ekonomi haber botu başlatıldı.")
+    logger.info("Ekonomi haber botu (Gemini AI destekli) başlatıldı.")
 
     if not DRY_RUN and (not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID):
-        logger.error("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID tanımlı değil.")
         sys.exit(1)
 
     state = load_state()
@@ -772,40 +745,31 @@ def main():
         translator = Translator()
 
         if force_send:
-            if not articles:
-                send_telegram_message("⚠️ Şu an filtrelere uygun haber bulunamadı.")
-            else:
-                send_telegram_message("🌐 <b>Ekonomi Haberleri</b>\nFiltrelenmiş güncel haberler:")
-                sent_count = 0
-                for article in articles[:MAX_NORMAL_NEWS]:
-                    prepare_article(article, translator)
-                    if send_telegram_message(format_news_message(article)):
-                        mark_seen(article)
-                        sent_count += 1
-                    time.sleep(0 if DRY_RUN else TELEGRAM_SEND_DELAY)
-                logger.info("İstek üzerine gönderilen haber: %s", sent_count)
+            send_telegram_message("🌐 <b>Ekonomi Haberleri ve BOJ Rapor Analizleri</b>")
+            sent_count = 0
+            for article in articles[:MAX_NORMAL_NEWS]:
+                prepare_article(article, translator)
+                if send_telegram_message(format_news_message(article)):
+                    mark_seen(article)
+                    sent_count += 1
+                time.sleep(0 if DRY_RUN else TELEGRAM_SEND_DELAY)
         else:
             candidates = [
-                article for article in articles
-                if not is_seen(article) and is_recent(article)
+                a for a in articles if not is_seen(a) and is_recent(a)
             ]
-            to_send = candidates[:MAX_AUTO_NEWS]
             sent_count = 0
-
-            for article in to_send:
+            for article in candidates[:MAX_AUTO_NEWS]:
                 prepare_article(article, translator)
                 if send_telegram_message(format_news_message(article)):
                     mark_seen(article)
                     sent_count += 1
                 time.sleep(0 if DRY_RUN else TELEGRAM_SEND_DELAY)
 
-            logger.info("Yeni gönderilen haber sayısı: %s", sent_count)
-
     finally:
         state["seen_ids"] = seen_list
         save_state(state)
 
-    logger.info("Bot çalışmasını tamamladı.")
+    logger.info("Bot tamamlandı. Gönderilen: %s", sent_count if 'sent_count' in locals() else 0)
 
 
 if __name__ == "__main__":
