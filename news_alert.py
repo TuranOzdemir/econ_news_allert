@@ -572,8 +572,8 @@ def fetch_feed(feed):
 
 def fetch_boj_press_releases(limit=2):
     """
-    Japonya Merkez Bankası (BOJ) basın sayfasını tarar, PDF'lerin ilk birkaç sayfasını 
-    detaylıca okur, ana başlıkları ve paragrafları derleyerek kapsamlı bir Türkçe özet hazırlar.
+    Japonya Merkez Bankası (BOJ) basın sayfasını tarar, PDF metinlerini 
+    MyMemory karakter sınırına (500 karakter) uygun parçalar halinde güvenle çevirir.
     """
     boj_articles = []
     translator = Translator()
@@ -613,32 +613,29 @@ def fetch_boj_press_releases(limit=2):
                     try:
                         pdf_res = http_get(pdf_link, RSS_TIMEOUT, headers={"User-Agent": USER_AGENT})
                         reader = PdfReader(io.BytesIO(pdf_res.content))
-                        # İlk 3-4 sayfayı oku (detaylı özet için yeterlidir)
-                        for page in reader.pages[:4]:
+                        for page in reader.pages[:2]:  # İlk 2 sayfa yeterli ve güvenlidir
                             extracted = page.extract_text() or ""
                             raw_text += extracted + "\n"
                     except Exception as e:
-                        logger.error("BOJ PDF indirme/okuma hatası: %s", e)
+                        logger.error("BOJ PDF okuma hatası: %s", e)
                 
                 if not raw_text:
                     paragraphs = page_soup.find_all("p")
-                    raw_text = " ".join([p.get_text(strip=True) for p in paragraphs[:10]])
+                    raw_text = " ".join([p.get_text(strip=True) for p in paragraphs[:5]])
 
-                # Temizlik ve Anlamlı Paragraf Seçimi
                 clean_raw = re.sub(r"\s+", " ", raw_text).strip()
                 
-                # Çok uzunsa çeviri sınırına takılmamak için ilk 1200 karakterlik en önemli kısmı al
-                chunk_en = clean_raw[:1200] if len(clean_raw) > 1200 else clean_raw
+                # MyMemory sınırını (500 karakter) aşmamak için metni 450 karakterle sınırlandırıyoruz
+                chunk_en = clean_raw[:450] if len(clean_raw) > 450 else clean_raw
                 
-                # Başlığı ve metni Türkçeye çevir
+                # Başlığı ve güvenli boyuttaki metni çevir
                 title_tr = translator.translate(title)
-                summary_tr = translator.translate(chunk_en) if chunk_en else "Detaylı BOJ basın açıklaması ve politika raporu."
+                summary_tr = translator.translate(chunk_en) if chunk_en else "Detaylı BOJ basın açıklaması."
 
-                # Raporu daha okunabilir maddeli/özetli formata sokalım
                 formatted_summary = (
                     f"🇯🇵 <b>Japonya Merkez Bankası (BOJ) Rapor Özeti</b>\n\n"
                     f"📝 {summary_tr}...\n\n"
-                    f"📌 <i>Raporun tamamı ve detaylı tablolar için aşağıdaki bağlantıyı kullanabilirsiniz.</i>"
+                    f"📌 <i>Raporun tamamı ve detaylar için aşağıdaki bağlantıyı kullanabilirsiniz.</i>"
                 )
 
                 boj_articles.append({
@@ -661,7 +658,6 @@ def fetch_boj_press_releases(limit=2):
         logger.error("BOJ basın sayfası taranamadı: %s", err)
 
     return boj_articles
-
 
 def fetch_news():
     with ThreadPoolExecutor(max_workers=RSS_MAX_WORKERS) as pool:
