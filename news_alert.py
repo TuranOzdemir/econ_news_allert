@@ -13,7 +13,6 @@ RSS_FEEDS = [
     "https://feeds.feedburner.com/reuters/topNews"
 ]
 
-# Piyasayı doğrudan etkileyebilecek kritik kelimeler
 FLASH_KEYWORDS = [
     "trump", "fed", "powell", "tcmb", "karahan", "faiz", 
     "enflasyon", "son dakika", "flaş", "savaş", "kriz", "yaptırım"
@@ -21,7 +20,7 @@ FLASH_KEYWORDS = [
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("HATA: Telegram credentials bulunamadı.")
+        print("HATA: Telegram bilgileri bulunamadı.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -36,7 +35,7 @@ def send_telegram_message(message):
         print(f"Mesaj gönderme hatası: {e}")
 
 def check_telegram_commands():
-    """ Telegram'dan gelen /son veya /haber komutlarını denetler """
+    """ Telegram'daki son mesajları denetler """
     if not TELEGRAM_BOT_TOKEN:
         return False
     
@@ -51,8 +50,10 @@ def check_telegram_commands():
             message = update.get("message", {})
             text = message.get("text", "").strip().lower()
             
-            if text in ["/son", "/haber", "/güncel"]:
+            # /son, /haber veya mesaj iceriginde bu kelimeler var mi?
+            if any(cmd in text for cmd in ["/son", "/haber", "/güncel", "son"]):
                 update_id = update["update_id"]
+                # Mesajı işlendi olarak işaretle
                 requests.get(f"{url}?offset={update_id + 1}")
                 return True
     except Exception as e:
@@ -60,19 +61,21 @@ def check_telegram_commands():
     return False
 
 def is_flash_news(title):
-    """ Başlıkta kritik kelime geçip geçmediğini kontrol eder """
     title_lower = title.lower()
     return any(keyword in title_lower for keyword in FLASH_KEYWORDS)
 
 def fetch_latest_news(limit=5):
     all_articles = []
     for feed_url in RSS_FEEDS:
-        parsed = feedparser.parse(feed_url)
-        for entry in parsed.entries[:limit]:
-            all_articles.append({
-                "title": entry.get("title", "Başlıksız"),
-                "link": entry.get("link", "#")
-            })
+        try:
+            parsed = feedparser.parse(feed_url)
+            for entry in parsed.entries[:limit]:
+                all_articles.append({
+                    "title": entry.get("title", "Başlıksız"),
+                    "link": entry.get("link", "#")
+                })
+        except Exception as e:
+            print(f"Feed okuma hatası ({feed_url}): {e}")
     return all_articles[:limit]
 
 def main():
@@ -90,11 +93,14 @@ def main():
         except Exception:
             seen_ids = set()
 
-    articles = fetch_latest_news(limit=10)
+    articles = fetch_latest_news(limit=5)
     
     if force_send:
-        send_telegram_message("📊 <b>Anlık İstek: En Son Ekonomi Haberleri</b>")
-        for art in articles[:5]:
+        # İsteği aldığını teyit et
+        send_telegram_message("📊 <b>Anlık İstek Alındı: En Son Ekonomi Haberleri Getiriliyor...</b>")
+        if not articles:
+            send_telegram_message("⚠️ Şu an haber kaynaklarından veri alınamadı.")
+        for art in articles:
             msg = f"📰 <b>{art['title']}</b>\n🔗 {art['link']}"
             send_telegram_message(msg)
             seen_ids.add(art['link'])
@@ -102,7 +108,6 @@ def main():
         new_count = 0
         for art in articles:
             if art['link'] not in seen_ids:
-                # Flaş/kritik haber kontrolü
                 if is_flash_news(art['title']):
                     msg = f"🚨 <b>KRİTİK FLAŞ HABER</b> 🚨\n\n<b>{art['title']}</b>\n🔗 {art['link']}"
                 else:
