@@ -20,6 +20,7 @@ import calendar
 import threading
 import io
 import urllib.parse
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -33,7 +34,7 @@ try:
     from deep_translator import GoogleTranslator, MyMemoryTranslator
 except ImportError:
     GoogleTranslator = None
-    MyMemoryTranslator = None
+    MyMemoryTranslator = Nones
 
 
 # ============================================================
