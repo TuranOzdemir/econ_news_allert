@@ -1,4 +1,15 @@
 {
-  "seen_ids": [],
-  "last_update_id": 0
+  "seen_ids": [
+    "https://www.bloomberght.com/ingilterede-enflasyon-faiz-artiriminin-onunu-acabilir-3791746",
+    "https://www.cnbc.com/2026/10/16/kevin-warsh-fed-october-rate-hike-interest-rates-markets.html",
+    "https://www.cnbc.com/2026/10/15/pce-ppi-september-fed-reserve-rate-hike.html",
+    "https://www.cnbc.com/2026/10/14/high-inflation-fed-expectations.html",
+    "https://www.cnbc.com/2026/10/14/godzilla-el-nino-asia-inflation-philippines.html",
+    "https://www.cnbc.com/2026/10/13/september-consumer-price-index-inflation.html",
+    "https://www.cnbc.com/2026/10/13/treasury-yields-imf-debt-inflation-.html",
+    "https://www.cnbc.com/2026/10/12/india-inflation-oil-energy-iran-war.html",
+    "https://www.marketwatch.com/story/my-wife-says-we-cant-afford-to-retire-we-have-4-million-do-i-just-keep-working-f1b6b085?mod=mw_rss_topstories",
+    "https://www.marketwatch.com/story/i-earn-110-000-a-year-i-lost-my-home-in-the-great-recession-im-renting-in-my-50s-why-is-that-judged-as-failure-d1371d67?mod=mw_rss_topstories"
+  ],
+  "last_update_id": 209715517
 }
