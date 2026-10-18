@@ -311,29 +311,33 @@ def http_get(url, timeout, retries=RSS_RETRIES, **kwargs):
 def summarize_with_gemini(raw_text):
     """
     BOJ PDF metnini Gemini AI kullanarak profesyonel bir ekonomi analizine ve 
-    maddelenmiş Türkçe özete dönüştürür. API yoksa veya hata alırsa boş döner.
+    maddelenmiş Türkçe özete dönüştürür.
     """
     if not genai or not GEMINI_API_KEY:
+        logger.warning("Gemini AI kütüphanesi veya GEMINI_API_KEY eksik!")
         return None
 
     try:
+        # Doğru ve kararlı Gemini model tanımlaması
         client = genai.Client(api_key=GEMINI_API_KEY)
         
         prompt = (
             "Sen uzman bir kıdemli ekonomi analistisin. Aşağıda Japonya Merkez Bankası'nın (BOJ) "
-            "resmi bir raporunun/konuşmasının ham metni bulunmaktadır. Bu metni oku ve yatırımcılar ile "
-            "ekonomistler için en kritik noktaları süzerek Türkçe olarak şu formatta profesyonel bir özet çıkar:\n\n"
+            "resmi bir raporunun ham metni bulunmaktadır. Başsağlığı, protokol veya teşekkür gibi "
+            "gereksiz giriş kısımlarını tamamen atla. Yalnızca ekonomik görünüm, enflasyon, faiz kararları, "
+            "para politikası duruşu ve piyasa etkileri gibi kritik finansal noktaları süzerek "
+            "yatırımcılar için şu formatta profesyonel Türkçe bir özet çıkar:\n\n"
             "🎯 **Ana Trend / Duruş:** (1 cümlelik genel para politikası yönü)\n"
             "📊 **Kritik Gelişmeler ve Veriler:**\n"
             "- (Madde 1)\n"
             "- (Madde 2)\n"
             "- (Madde 3)\n\n"
-            "Lütfen yalnızca ekonomik odaklı, net ve akıcı Türkçe bir özet sun. Ham metin:\n\n"
-            f"{raw_text[:4000]}"
+            "Ham metin:\n\n"
+            f"{raw_text[:6000]}"
         )
 
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt,
         )
         
@@ -343,7 +347,6 @@ def summarize_with_gemini(raw_text):
         logger.error("Gemini AI özetleme hatası: %s", redact(e))
     
     return None
-
 
 # ============================================================
 # 6. HABER FİLTRELEME VE GEÇMİŞ YÖNETİMİ
@@ -566,9 +569,6 @@ def fetch_feed(feed):
 
 
 def fetch_boj_press_releases(limit=1):
-    """
-    BOJ basın bültenlerini ve PDF'lerini tarar; Gemini AI ile profesyonel özet çıkarır.
-    """
     boj_articles = []
     translator = Translator()
     
@@ -582,7 +582,7 @@ def fetch_boj_press_releases(limit=1):
             href = a['href']
             title = a.get_text(strip=True)
             if href.startswith("/en/about/press/") and href.endswith(".htm") and "index" not in href and title:
-                full_url = urllib.parse.urljoin(BOJ_BASE_URL, href)
+                full_url = urljoin(BOJ_BASE_URL, href) # ya da urllib.parse.urljoin
                 sub_pages.append((title, full_url))
                 if len(sub_pages) >= limit * 2:
                     break
@@ -607,26 +607,23 @@ def fetch_boj_press_releases(limit=1):
                     try:
                         pdf_res = http_get(pdf_link, RSS_TIMEOUT, headers={"User-Agent": USER_AGENT})
                         reader = PdfReader(io.BytesIO(pdf_res.content))
-                        for page in reader.pages[:3]:
+                        for page in reader.pages[:4]:
                             raw_text += (page.extract_text() or "") + "\n"
                     except Exception:
                         pass
                 
                 if not raw_text:
                     paragraphs = page_soup.find_all("p")
-                    raw_text = " ".join([p.get_text(strip=True) for p in paragraphs[:10]])
+                    raw_text = " ".join([p.get_text(strip=True) for p in paragraphs[:15]])
 
-                # 1. Önce Gemini AI ile profesyonel özet almayı dene
+                # Gemini AI Özeti Çağrısı
                 ai_summary = summarize_with_gemini(raw_text)
                 
-                if ai_summary:
-                    summary_tr = ai_summary
-                    title_tr = translator.translate(title)
-                else:
-                    # Gemini anahtarı yoksa veya hata verdiyse klasik çeviriye düş
-                    clean_raw = re.sub(r"\s+", " ", raw_text).strip()
-                    summary_tr = translator.translate(clean_raw[:450])
-                    title_tr = translator.translate(title)
+                if not ai_summary:
+                    # Eğer AI çalışmadıysa ham metni basmak yerine şık bir bilgilendirme yazısı koyalım
+                    ai_summary = "📊 <b>Rapor Özeti:</b> Metin başarıyla indirildi ancak AI analizi oluşturulamadı. Lütfen orijinal bağlantıdan inceleyin."
+
+                title_tr = translator.translate(title)
 
                 boj_articles.append({
                     "title": title,
@@ -635,8 +632,8 @@ def fetch_boj_press_releases(limit=1):
                     "id": normalize_link(target_link),
                     "source": "Bank of Japan (BOJ) Press",
                     "type": "GLOBAL",
-                    "summary": summary_tr,
-                    "display_summary": summary_tr,
+                    "summary": ai_summary,
+                    "display_summary": ai_summary,
                     "priority": "HIGH",
                     "flash": True,
                     "published_ts": time.time(),
@@ -649,7 +646,6 @@ def fetch_boj_press_releases(limit=1):
         logger.error("BOJ basın sayfası taranamadı: %s", err)
 
     return boj_articles
-
 
 def fetch_news():
     with ThreadPoolExecutor(max_workers=RSS_MAX_WORKERS) as pool:
