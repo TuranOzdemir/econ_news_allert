@@ -322,16 +322,17 @@ def summarize_with_gemini(raw_text):
         client = genai.Client(api_key=GEMINI_API_KEY)
         
         prompt = (
-            "Sen uzman bir kıdemli ekonomi analistisin. Aşağıda Japonya Merkez Bankası'nın (BOJ) "
-            "resmi bir raporunun ham metni bulunmaktadır. Başsağlığı, protokol veya teşekkür gibi "
-            "gereksiz giriş kısımlarını tamamen atla. Yalnızca ekonomik görünüm, enflasyon, faiz kararları, "
-            "para politikası duruşu ve piyasa etkileri gibi kritik finansal noktaları süzerek "
-            "yatırımcılar için şu formatta profesyonel Türkçe bir özet çıkar:\n\n"
-            "🎯 **Ana Trend / Duruş:** (1 cümlelik genel para politikası yönü)\n"
+            "Sen uzman bir kıdemli ekonomi analistisin. Aşağıda resmi bir finansal raporun, "
+            "merkez bankası bülteninin veya ekonomik dokümanın ham metni bulunmaktadır. "
+            "Giriş protokollerini, nezaket ifadelerini veya genel teşekkür kısımlarını tamamen atla. "
+            "Metnin türü ne olursa olsun (para politikası, enflasyon analizi, büyüme raporu vb.); "
+            "yatırımcılar ve ekonomistler için en kritik finansal verileri, politika sinyallerini ve piyasa etkilerini "
+            "süzerek şu evrensel formatta profesyonel Türkçe bir özet çıkar:\n\n"
+            "🎯 **Ana Trend / Duruş:** (1 cümlelik genel ekonomik yönelim veya politik duruş)\n"
             "📊 **Kritik Gelişmeler ve Veriler:**\n"
-            "- (Madde 1)\n"
-            "- (Madde 2)\n"
-            "- (Madde 3)\n\n"
+            "- (En önemli ekonomik veri veya gelişme)\n"
+            "- (İkincil kritik faktör veya beklenti)\n"
+            "- (Piyasaya veya geleceğe yönelik risk/fırsat unsuru)\n\n"
             "Ham metin:\n\n"
             f"{raw_text[:6000]}"
         )
