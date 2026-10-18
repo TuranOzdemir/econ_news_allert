@@ -572,8 +572,8 @@ def fetch_feed(feed):
 
 def fetch_boj_press_releases(limit=3):
     """
-    Japonya Merkez Bankası (BOJ) basın sayfasındaki son PDF açıklamalarını tarar, 
-    metnini okur ve haber listesine ekler.
+    Japonya Merkez Bankası (BOJ) basın sayfasını ve alt .htm sayfalarını tarar, 
+    ilgili duyuruları ve PDF/metin içeriklerini çekip haber listesine ekler.
     """
     boj_articles = []
     try:
@@ -581,45 +581,71 @@ def fetch_boj_press_releases(limit=3):
         response = http_get(BOJ_PRESS_URL, RSS_TIMEOUT, headers={"User-Agent": USER_AGENT})
         soup = BeautifulSoup(response.content, "html.parser")
         
-        pdf_entries = []
+        sub_pages = []
         for a in soup.find_all("a", href=True):
             href = a['href']
             title = a.get_text(strip=True)
-            if href.endswith(".pdf") and title:
+            # /en/about/press/ altında yer alan ve .htm ile biten duyuru sayfalarını seç
+            if href.startswith("/en/about/press/") and href.endswith(".htm") and "index" not in href and title:
                 full_url = urllib.parse.urljoin(BOJ_BASE_URL, href)
-                pdf_entries.append((title, full_url))
-                if len(pdf_entries) >= limit:
+                sub_pages.append((title, full_url))
+                if len(sub_pages) >= limit * 2:
                     break
 
-        for title, pdf_url in pdf_entries:
+        # Her bir alt sayfaya girip içeriğini veya varsa PDF'ini alalım
+        for title, page_url in sub_pages:
+            if len(boj_articles) >= limit:
+                break
             try:
-                pdf_res = http_get(pdf_url, RSS_TIMEOUT, headers={"User-Agent": USER_AGENT})
-                reader = PdfReader(io.BytesIO(pdf_res.content))
-                extracted_text = ""
-                for page in reader.pages[:2]:
-                    extracted_text += page.extract_text() or ""
+                page_res = http_get(page_url, RSS_TIMEOUT, headers={"User-Agent": USER_AGENT})
+                page_soup = BeautifulSoup(page_res.content, "html.parser")
+                
+                # Sayfa içinde doğrudan PDF var mı kontrol et
+                pdf_link = None
+                for a_tag in page_soup.find_all("a", href=True):
+                    if a_tag['href'].endswith(".pdf"):
+                        pdf_link = urllib.parse.urljoin(BOJ_BASE_URL, a_tag['href'])
+                        break
+                
+                target_link = pdf_link if pdf_link else page_url
+                
+                # İçerik özeti için sayfa metnini veya PDF'i oku
+                summary_text = ""
+                if pdf_link:
+                    try:
+                        pdf_res = http_get(pdf_link, RSS_TIMEOUT, headers={"User-Agent": USER_AGENT})
+                        reader = PdfReader(io.BytesIO(pdf_res.content))
+                        for page in reader.pages[:2]:
+                            summary_text += page.extract_text() or ""
+                    except Exception:
+                        pass
+                
+                if not summary_text:
+                    # PDF yoksa htm sayfasındaki paragraf metinlerini al
+                    paragraphs = page_soup.find_all("p")
+                    summary_text = " ".join([p.get_text(strip=True) for p in paragraphs[:3]])
 
-                clean_summary = re.sub(r"\s+", " ", extracted_text).strip()
+                clean_summary = re.sub(r"\s+", " ", summary_text).strip()
                 summary_short = clean_summary[:250] + "..." if len(clean_summary) > 250 else clean_summary
 
                 boj_articles.append({
                     "title": title,
-                    "link": pdf_url,
-                    "id": normalize_link(pdf_url),
+                    "link": target_link,
+                    "id": normalize_link(target_link),
                     "source": "Bank of Japan (BOJ) Press",
                     "type": "GLOBAL",
-                    "summary": shorten_text(summary_short),
+                    "summary": shorten_text(summary_short) if summary_short else "Bank of Japan resmi basın açıklaması.",
                     "priority": "HIGH",
                     "flash": True,
-                    "published_ts": time.time(), # Anlık veya güncel kabul edilir
+                    "published_ts": time.time(),
                 })
-            except Exception as pdf_err:
-                logger.error("BOJ PDF okuma hatası (%s): %s", pdf_url, pdf_err)
+            except Exception as page_err:
+                logger.error("BOJ alt sayfa okuma hatası (%s): %s", page_url, page_err)
+
     except Exception as err:
         logger.error("BOJ basın sayfası okunamadı: %s", err)
 
     return boj_articles
-
 
 def fetch_news():
     with ThreadPoolExecutor(max_workers=RSS_MAX_WORKERS) as pool:
