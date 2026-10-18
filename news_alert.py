@@ -337,7 +337,7 @@ def summarize_with_gemini(raw_text):
         )
 
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.8-flash',
             contents=prompt,
         )
         
