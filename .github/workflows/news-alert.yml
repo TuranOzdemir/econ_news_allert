@@ -35,16 +35,71 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python news_alert.py
 
-      # Bot hata verse veya zaman aşımına uğrasa bile gönderilen haberlerin
-      # kaydı repoya işlensin (if: always()).
+      # Bot hata verse bile gönderilen haberlerin kaydı repoya işlensin.
+      # Uzakta aynı dosya değişmişse git ile birleştirmeye çalışmak yerine
+      # iki tarafın seen_ids listesi birleştirilir (çakışma çıkmaz) ve
+      # push başarısız olursa 3 kez yeniden denenir.
       - name: Haber geçmişini kaydet
         if: always()
         run: |
-          if [ -n "$(git status --porcelain news_seen.json)" ]; then
-            git config user.name "news-bot"
-            git config user.email "news-bot@users.noreply.github.com"
+          git config user.name "news-bot"
+          git config user.email "news-bot@users.noreply.github.com"
+
+          cat > /tmp/merge_state.py <<'PY'
+          import json
+
+          def load(path):
+              try:
+                  with open(path, encoding="utf-8") as f:
+                      data = json.load(f)
+              except Exception:
+                  return [], 0
+              if isinstance(data, list):
+                  return data, 0
+              if isinstance(data, dict):
+                  ids = data.get("seen_ids", [])
+                  uid = data.get("last_update_id", 0)
+                  return (
+                      ids if isinstance(ids, list) else [],
+                      uid if isinstance(uid, int) else 0,
+                  )
+              return [], 0
+
+          theirs_ids, theirs_uid = load("news_seen.json")
+          ours_ids, ours_uid = load("/tmp/ours.json")
+
+          ids = list(dict.fromkeys(theirs_ids + ours_ids))[-3000:]
+
+          with open("news_seen.json", "w", encoding="utf-8") as f:
+              json.dump(
+                  {"seen_ids": ids, "last_update_id": max(theirs_uid, ours_uid)},
+                  f,
+                  ensure_ascii=False,
+                  indent=2,
+              )
+          PY
+
+          cp news_seen.json /tmp/ours.json 2>/dev/null || echo '{}' > /tmp/ours.json
+
+          for i in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            python3 /tmp/merge_state.py
+
+            if [ -z "$(git status --porcelain news_seen.json)" ]; then
+              echo "news_seen.json değişmedi, commit gerekmiyor."
+              exit 0
+            fi
+
             git add news_seen.json
             git commit -m "chore: update news_seen.json"
-            git pull --rebase
-            git push
-          fi
+
+            if git push; then
+              exit 0
+            fi
+
+            sleep $((i * 3))
+          done
+
+          echo "news_seen.json 3 denemede de push edilemedi."
+          exit 1
