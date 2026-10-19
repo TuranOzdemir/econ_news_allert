@@ -769,4 +769,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    logger.info("Ekonomi haber botu (7/24 Pella.app Modu) başlatıldı.")
+    
+    # 15 dakikalık aralar (15 * 60 saniye = 900 saniye)
+    CHECK_INTERVAL = 5 * 60
+
+    while True:
+        try:
+            logger.info("Periyodik haber taraması ve analiz döngüsü tetiklendi...")
+            main()
+        except Exception as e:
+            logger.error("Döngü içinde kritik hata: %s", redact(e))
+        
+        logger.info("Sonraki tarama için 15 dakika bekleniyor...")
+        time.sleep(CHECK_INTERVAL)
